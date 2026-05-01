@@ -7,6 +7,8 @@
 #include "proc.h"
 #include "spinlock.h"
 
+int ucounter = 0;
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];

@@ -95,3 +95,21 @@ sys_shutdown(void){
   outw(0x604, 0x2000);
   return 0;
 }
+
+// 获取 ucounter 的值
+int
+sys_ucounter_get(void)
+{
+  return ucounter;
+}
+
+// 设置 ucounter 的值
+int
+sys_ucounter_set(void)
+{
+  int val;
+  if(argint(0, &val) < 0)
+    return -1;
+  ucounter = val;
+  return 0;
+}
