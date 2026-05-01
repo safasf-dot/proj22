@@ -25,6 +25,7 @@ void init_thread_context(struct uthread *t, void (*func)(void)){
     // Set the instruction pointer to the function to be executed
     //add your code here
 
+    t->context->eip = (uint)func;
 
 }
 
@@ -68,7 +69,9 @@ void uthread_create(void (*func)(void)){
     // Set the thread's state to RUNNABLE
     // Set the thread's uid to global_thread_id, and increment global_thread_id
     
-
+    init_thread_context(t, func);
+    t->state = RUNNABLE;
+    t->uid = global_thread_id++;
 
 }
 
@@ -104,7 +107,9 @@ void uthread_schedule(void){
     //you should call uthread_switch to change context,
     //but before that, you need to update variable current_thread to point to the next thread 
 
-
+    struct uthread *old = current_thread;
+    current_thread = next_thread;
+    uthread_switch(&old->context, next_thread->context);
 
     }
 }
@@ -120,11 +125,13 @@ void uthread_yield(){
     //your code here
     //you should change the state of the current thread to RUNNABLE, and call uthread_schedule
 
-       
+    current_thread->state = RUNNABLE;
+    uthread_schedule();
 }
 
 void uthread_exit(){
     //your code here, change the state of the current thread structure to UNUSED and call uthread_schedule
 
-
+    current_thread->state = UNUSED;
+    uthread_schedule();
 }
