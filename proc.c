@@ -87,7 +87,7 @@ allocproc(void)
   release(&ptable.lock);
   return 0;
 
-found:
+ found:
   p->state = EMBRYO;
   p->pid = nextpid++;
 
@@ -143,6 +143,8 @@ userinit(void)
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
+  p->is_thread = 0;
+  p->thread_group = p;
 
   // this assignment to p->state lets other cores
   // run this process. the acquire forces the above
@@ -211,6 +213,8 @@ fork(void)
   np->cwd = idup(curproc->cwd);
 
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
+  np->is_thread = 0;
+  np->thread_group = np;
 
   pid = np->pid;
 
@@ -221,6 +225,136 @@ fork(void)
   release(&ptable.lock);
   
   return pid;
+}
+
+// Clone a new kernel thread - shares address space with parent
+int
+clone(void *(*fn)(void *), void *stack, void *arg)
+{
+  struct proc *np;
+  struct proc *curproc = myproc();
+  int tid;
+
+  // Allocate new process structure (thread)
+  if((np = allocproc()) == 0){
+    return -1;
+  }
+
+  // Share address space with parent
+  np->pgdir = curproc->pgdir;
+  np->sz = curproc->sz;
+  np->parent = curproc->parent;
+  
+  // Copy file descriptors
+  int i;
+  for(i = 0; i < NOFILE; i++)
+    if(curproc->ofile[i])
+      np->ofile[i] = filedup(curproc->ofile[i]);
+  np->cwd = idup(curproc->cwd);
+
+  safestrcpy(np->name, curproc->name, sizeof(curproc->name));
+
+  // Set up trap frame for user-level execution
+  *np->tf = *curproc->tf;
+  np->tf->eax = 0;
+
+  // Set up stack: stack parameter should be the high address
+  np->tf->esp = (uint)stack - 4;
+  *((int *)np->tf->esp) = (int)arg;  // Push argument
+
+  np->tf->esp -= 4;
+  *((int *)np->tf->esp) = 0xfffffffe;  // Fake return address
+
+  // Set instruction pointer to function
+  np->tf->eip = (uint)fn;
+
+  // Mark as thread
+  np->is_thread = 1;
+  np->thread_group = curproc->thread_group ? curproc->thread_group : curproc;
+  np->thread_ret_val = 0;
+
+  tid = np->pid;
+
+  acquire(&ptable.lock);
+  np->state = RUNNABLE;
+  release(&ptable.lock);
+
+  return tid;
+}
+
+// Join a thread - wait for it to exit and get return value
+int
+join(int tid, void **ret_p, void **stack)
+{
+  struct proc *p;
+  struct proc *curproc = myproc();
+
+  acquire(&ptable.lock);
+  for(;;){
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->pid == tid && p->is_thread){
+        if(p->state == ZOMBIE){
+          // Thread has exited
+          *ret_p = p->thread_ret_val;
+          kfree(p->kstack);
+          p->kstack = 0;
+          p->pid = 0;
+          p->parent = 0;
+          p->name[0] = 0;
+          p->killed = 0;
+          p->state = UNUSED;
+          p->is_thread = 0;
+          p->pgdir = 0;  // Don't free - shared with parent
+          release(&ptable.lock);
+          return 0;
+        }
+        break;
+      }
+    }
+
+    if(p == &ptable.proc[NPROC] || curproc->killed){
+      release(&ptable.lock);
+      return -1;
+    }
+
+    // Sleep until thread exits
+    sleep(p, &ptable.lock);
+  }
+}
+
+// Thread exit - must be called from a thread
+void
+thread_exit(void *ret)
+{
+  struct proc *curproc = myproc();
+  struct proc *p;
+
+  if(curproc->ofile){
+    int fd;
+    for(fd = 0; fd < NOFILE; fd++){
+      if(curproc->ofile[fd]){
+        fileclose(curproc->ofile[fd]);
+        curproc->ofile[fd] = 0;
+      }
+    }
+  }
+
+  begin_op();
+  iput(curproc->cwd);
+  end_op();
+  curproc->cwd = 0;
+
+  // Save return value
+  curproc->thread_ret_val = ret;
+
+  acquire(&ptable.lock);
+
+  // Wake up all threads waiting in join
+  wakeup1(curproc);
+
+  curproc->state = ZOMBIE;
+  sched();
+  panic("zombie thread exit");
 }
 
 // Exit the current process.  Does not return.
@@ -251,12 +385,21 @@ exit(void)
 
   acquire(&ptable.lock);
 
+  // Kill all threads in this process group
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->is_thread && p->thread_group == curproc && p != curproc){
+      p->killed = 1;
+      if(p->state == SLEEPING)
+        p->state = RUNNABLE;
+    }
+  }
+
   // Parent might be sleeping in wait().
   wakeup1(curproc->parent);
 
   // Pass abandoned children to init.
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->parent == curproc){
+    if(p->parent == curproc && !p->is_thread){
       p->parent = initproc;
       if(p->state == ZOMBIE)
         wakeup1(initproc);
@@ -283,7 +426,7 @@ wait(void)
     // Scan through table looking for exited children.
     havekids = 0;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->parent != curproc)
+      if(p->parent != curproc || p->is_thread)
         continue;
       havekids = 1;
       if(p->state == ZOMBIE){
