@@ -106,6 +106,9 @@ extern int sys_uptime(void);
 extern int sys_shutdown(void);
 extern int sys_ucounter_get(void);
 extern int sys_ucounter_set(void);
+extern int sys_clone(void);
+extern int sys_join(void);
+extern int sys_thread_exit(void);
 
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -132,6 +135,9 @@ static int (*syscalls[])(void) = {
 [SYS_shutdown] sys_shutdown,
 [SYS_ucounter_get] sys_ucounter_get,
 [SYS_ucounter_set] sys_ucounter_set,
+[SYS_clone] sys_clone,
+[SYS_join] sys_join,
+[SYS_thread_exit] sys_thread_exit,
 };
 
 void
